@@ -1,0 +1,24 @@
+{
+  "name": "山姆代购管理",
+  "short_name": "山姆代购",
+  "description": "山姆代购接龙解析与采购清单管理工具",
+  "start_url": "/index.html",
+  "display": "standalone",
+  "background_color": "#f5f7fa",
+  "theme_color": "#2563eb",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

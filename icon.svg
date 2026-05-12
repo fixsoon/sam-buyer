@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#2563eb"/>
+  <g transform="translate(80,96) scale(0.72)">
+    <path d="M20 0 L60 0 L120 320 L420 320 L470 120 L100 120" fill="none" stroke="#fff" stroke-width="36" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="160" cy="430" r="40" fill="#fff"/>
+    <circle cx="380" cy="430" r="40" fill="#fff"/>
+  </g>
+  <text x="256" y="460" text-anchor="middle" font-family="sans-serif" font-weight="800" font-size="120" fill="#fff">SAM</text>
+</svg>
