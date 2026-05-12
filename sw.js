@@ -1,10 +1,13 @@
 // Service Worker for 山姆代购管理 PWA
-const CACHE_NAME = 'sam-buyer-v1';
+const CACHE_NAME = 'sam-buyer-v2';
+const BASE_PATH = self.location.pathname.replace(/sw\.js$/, '');
+
+// 相对路径的资产列表
 const ASSETS = [
-  '/index.html',
-  '/manifest.json',
-  '/icon-192.png',
-  '/icon-512.png',
+  BASE_PATH + 'index.html',
+  BASE_PATH + 'manifest.json',
+  BASE_PATH + 'icon-192.png',
+  BASE_PATH + 'icon-512.png',
 ];
 
 // Install: cache core assets
@@ -25,12 +28,12 @@ self.addEventListener('activate', event => {
   self.clients.claim();
 });
 
-// Fetch: cache-first for local assets, network-first for others
+// Fetch: cache-first for same-scope assets, network-first for others
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
-  // Same-origin requests: cache-first
-  if (url.origin === self.location.origin) {
+  // Same-origin and within scope: cache-first
+  if (url.origin === self.location.origin && url.pathname.startsWith(BASE_PATH)) {
     event.respondWith(
       caches.match(event.request).then(cached => {
         if (cached) return cached;
@@ -40,6 +43,9 @@ self.addEventListener('fetch', event => {
             caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
           }
           return response;
+        }).catch(() => {
+          // Network failed: try cache as fallback
+          return caches.match(event.request);
         });
       })
     );
