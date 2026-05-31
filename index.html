@@ -882,23 +882,40 @@ function parseQty(token) {
   let t = token.trim();
   if (!t || t.length === 0) return null;
 
+  // 预处理：中文数字 → 阿拉伯数字（"两"→2，"三"→3 等）
+  const CN_NUMS = { '一':1, '两':2, '二':2, '三':3, '四':4, '五':5, '六':6, '七':7, '八':8, '九':9, '十':10 };
+  // 替换 "中文数字+单位" 模式（如 "两份" → "2份"）
+  t = t.replace(new RegExp('([' + Object.keys(CN_NUMS).join('') + '])([整半]?[' + QTY_UNITS + '])', 'g'),
+    (_, cn, unit) => CN_NUMS[cn] + unit);
+  // 替换独立的中文数字（如 "两份" 中已经处理，单独的 "两" 不替换）
+  // "十" 单独出现时：如 "十盒" → "10盒"
+  t = t.replace(/十([整半]?[桶份盒提束袋瓶罐包条根片张个只颗粒组套件])/g, '10$1');
+
   // 预处理：处理 "名称规格*数量" 模式
   // 例如 "蒙牛冠益乳发酵乳100g*24*1" → name="蒙牛冠益乳发酵乳100g*24", qty=1
   // 例如 "鸡排松饼组合*1" → name="鸡排松饼组合", qty=1
-  // 例如 "鸡蛋*1" → name="鸡蛋", qty=1
-  const specQtyMatch = t.match(/^(.+?)[*×xX]\s*(\d+)\s*$/);
+  // 例如 "酸种水晶面包×3" → name="酸种水晶面包", qty=3
+  // 例如 "1.8kgX2" → name="1.8kg", qty=2（小数规格+乘号+数量）
+  // 例如 "MM300毫升×48" → name="MM300毫升×48", qty=1（×48是规格不是数量）
+  const specQtyMatch = t.match(/^(.+?)\s*[*×xX]\s*(\d+)\s*$/);
   if (specQtyMatch) {
-    const namePart = specQtyMatch[1].replace(/[*×xX\s]+$/, '').trim();
+    let namePart = specQtyMatch[1].replace(/[*×xX\s]+$/, '').trim();
     const qty = parseInt(toHalfWidth(specQtyMatch[2]), 10) || 1;
+    // 判断 × 后面的数字是"规格"还是"数量"
+    // 如果 namePart 包含规格单位（毫升/g/kg/ml/L等），则 ×N 是规格的一部分
+    const isSpecMultiplier = /\d\s*(?:毫升|ml|ML|g|kg|KG|G|克|千克|L|公升|mL)\s*$/i.test(namePart);
+    if (isSpecMultiplier) {
+      // ×N 是规格（如 300毫升×48），整体保留为名字，qty=1
+      return { name: t, qty: 1, unit: '' };
+    }
     if (namePart.length >= 1) {
-      // 检查 namePart 中是否还有 "规格*数量" 模式（如 100g*24）
-      // 如果有，那是规格，保留在名字中
       return { name: namePart, qty, unit: '' };
     }
   }
 
   // 尝试从尾部提取 数字+[整半]+单位
   // 支持 "1整份"、"2半盒"、"3提" 等模式
+  // 同时支持小数规格在名字中：不把 "1.8kg" 中的 "1" 误当数量
   let m = t.match(new RegExp('^(.*?)\\s*([2-9]\\d*|[1-9]\\d*)\\s*([整半]?[' + QTY_UNITS + '])?\\s*$'));
 
   // 如果没匹配到（可能 qty=1 或 无数量），再试宽松匹配
@@ -912,8 +929,23 @@ function parseQty(token) {
     namePart = namePart.replace(/[：:，,；;、．.]+$/, '').trim();
     const qty = parseInt(toHalfWidth(m[2]), 10) || 1;
     const unit = m[3] || '';
+
+    // 防止小数规格误拆：如果 namePart 以 "数字." 结尾（如 "1."），
+    // 说明 "1.8kg" 被拆成 namePart="1." + qty=8，应合并回去
+    if (/\d[.．]$/.test(namePart) && /^\d/.test(m[2])) {
+      // 回退：不做拆分，整体当商品名
+      let full = t.replace(/[：:，,；;、．.*×xX\s]+$/, '').trim();
+      return { name: full, qty: 1, unit: '' };
+    }
+
     if (namePart.length >= 1) {
       return { name: namePart, qty, unit };
+    }
+
+    // namePart 为空但有数量+单位（如 "2份"、"3提"）→ 这是纯数量token
+    // 在上层 parseOrderText 中会被追加到前一个商品
+    if (namePart.length === 0 && unit) {
+      return { name: '', qty, unit };
     }
   }
 
@@ -922,9 +954,19 @@ function parseQty(token) {
 
   // 检测尾部无数字前缀的单位词（如 "整份"、"半份"）
   // "山姆餐吧：MM肉食爱好者披萨整份" → name="山姆餐吧：MM肉食爱好者披萨", unit="整份"
+  // 但要排除常见词尾字被误当单位：面包→面+包(错)、蛋糕→蛋+糕(无单位但逻辑类似)
   const trailingUnitMatch = namePart.match(/^(.+?)([整半]?[桶份盒提束袋瓶罐包条根片张个只颗粒组套件])$/);
   if (trailingUnitMatch && trailingUnitMatch[1].length >= 2) {
-    return { name: trailingUnitMatch[1], qty: 1, unit: trailingUnitMatch[2] };
+    const baseName = trailingUnitMatch[1];
+    const unitChar = trailingUnitMatch[2].replace(/^[整半]/, '');
+    // 如果 baseName 的最后一个字 + unitChar 组成常见商品词尾 → 不拆分
+    const lastChar = baseName.slice(-1);
+    const COMPOUND_TAILS = ['面包', '钱包', '书包', '冰盒', '花盒', '药盒', '餐盒', '礼盒', '盲盒', '果盒', '套盒', '纸盒', '铁盒', '木盒', '锦盒', '首盒', '整盒', '半盒', '一盒', '面包', '茶包', '纸包', '花包', '红包', '钱包', '头包', '沙包', '草包', '一包', '全包', '外包', '内包', '塑包', '真包', '假包'];
+    if (COMPOUND_TAILS.some(t => t.endsWith(unitChar) && baseName.endsWith(t.slice(0, -1)))) {
+      // 不拆，整体作为名字
+    } else {
+      return { name: baseName, qty: 1, unit: trailingUnitMatch[2] };
+    }
   }
 
   if (namePart.length >= 1) {
@@ -958,9 +1000,21 @@ function splitGoodsSmart(rawText) {
   // Step 1: 替换所有已知分隔符
   let s = preprocessed
     .replace(/[，,；;、]/g, '|')
-    .replace(/[．.+]/g, '|')       // 全角句号 / 加号
+    .replace(/[．。+]/g, '|')      // 全角句号 / 中文句号 / 加号（不匹配英文小数点）
     .replace(/\s{2,}/g, '|')       // 2+空格
     .replace(/\s*\+\s*/g, '|');    // + 号
+
+  // Step 1.5: 智能处理 ×/X — 规格中的保留，纯数量的替换为分隔符
+  // 策略：先保护 "规格数字×数量" 模式（如 300毫升×48、100g×24、1.8kgX2）
+  // 用临时占位符保护规格×，替换完数量×后再恢复
+  // 规格×模式：前面紧跟 (数字+规格单位) 或 (数字)，且后面紧跟数字
+  s = s.replace(/(\d\s*(?:毫升|ml|ML|g|kg|KG|G|克|千克|L|公升|mL)\s*)[*×xX]\s*(\d+)/gi, '$1⨯$2');
+  // 也保护 "数字×数字×数字" 模式（如 100g×24*1 中的中间 ×）
+  s = s.replace(/(\d)\s*[*×xX]\s*(\d+\s*[*×xX])/gi, '$1⨯$2');
+  // 剩余的 ×/X 且紧跟数字 → 视为数量分隔符，替换为 |
+  s = s.replace(/[*×xX]\s*(\d)/g, '|$1');
+  // 恢复规格⨯为 ×
+  s = s.replace(/⨯/g, '×');
 
   // Step 2: 按管道符初步切分
   let parts = s.split('|').map(p => p.trim()).filter(p => p.length > 0);
@@ -1004,25 +1058,44 @@ function trySplitByPattern(text) {
   // 使用 "非数字+数字+单位" 全局匹配找到所有 数字边界点
   // 修复：使用 [1-9] 而非 [0-9]，避免将 "0添加"/"0冰糖老抽" 中的 "0" 误判为数量边界
   const UNIT_CHARS = '桶份盒提束袋瓶罐包条根片张个只颗粒组套件';
+  // 规格单位模式：数字 + (小数)? + 规格单位(如 毫升/g/kg/ml/L)
+  // 这些不应作为"数量"拆分点
+  // 先将规格数字区域标记为不可拆分
+  const specPattern = /\d+(?:\.\d+)?\s*(?:毫升|ml|ML|g|kg|KG|G|克|千克|L|公升|mL)(?:\s*[×xX*]\s*\d+)*/gi;
+  const specZones = []; // [{start, end}]
+  let sm;
+  while ((sm = specPattern.exec(text)) !== null) {
+    specZones.push({ start: sm.index, end: sm.index + sm[0].length });
+  }
+
+  // 判断一个位置区间是否与规格区域重叠
+  function overlapsSpecZone(start, end) {
+    return specZones.some(z => start < z.end && end > z.start);
+  }
+
   const pattern = new RegExp('([^0-9]+?)([1-9][0-9]*)([' + UNIT_CHARS + ']*)', 'g');
 
-  // 收集所有匹配的位置
+  // 收集所有匹配的位置，区分"规格数字"和"数量数字"
   const matches = [];
   let m;
   while ((m = pattern.exec(text)) !== null) {
     const namePart = m[1].trim();
     if (namePart.length < 1) continue;
+
+    // 跳过与规格区域重叠的匹配
+    if (overlapsSpecZone(m.index, m.index + m[0].length)) continue;
+
     matches.push({
       index: m.index,
       end: m.index + m[0].length,
       namePart: namePart,
       numPart: m[2],
       unitPart: m[3] || '',
-      fullMatch: m[0]
+      fullMatch: m[0],
     });
   }
 
-  // 没有匹配到任何 "文字+数字" 模式 → 返回原文
+  // 没有数量匹配 → 返回原文（可能全是规格数字，如 "MM300毫升×48矿泉水"）
   if (matches.length === 0) {
     return [text];
   }
@@ -1030,6 +1103,19 @@ function trySplitByPattern(text) {
   // 只有1个匹配且覆盖了大部分文本 → 不拆分
   if (matches.length === 1 && matches[0].index === 0 && matches[0].end >= text.length - 2) {
     return [text];
+  }
+
+  // 特殊情况：1个匹配且 namePart 是短中文词，前面紧跟规格区域
+  // 例如 "MM300毫升×48矿泉水 1" → 唯一匹配是 "矿泉水1"
+  // "矿泉水" 是规格商品的名称延续，不应独立拆分
+  if (matches.length === 1 && specZones.length > 0) {
+    const match = matches[0];
+    const specZone = specZones[specZones.length - 1];
+    // 如果匹配紧跟在规格区域后面（中间可能只有少量中文字符作为商品名延续）
+    if (match.index <= specZone.end + 6 && /^[\u4e00-\u9fff]{1,6}$/.test(match.namePart)) {
+      // 这是 "规格+商品名+数量" 的一体化商品，不拆分
+      return [text];
+    }
   }
 
   // 有多个匹配，或者1个匹配后面还有文本 → 按匹配位置拆分
@@ -1276,6 +1362,25 @@ function parseOrderText(text) {
 
       // 还原多词品牌名的中间连接符（"Pick·Up" → "Pick Up"）
       const cleanName = parsed.name.trim().replace(/·/g, ' ');
+
+      // 纯数字名字（如 "1"、"3"）：这是前一个商品的数量追加
+      // 例如 "MM300毫升×48矿泉水" 和 "1" → 应该是 MM300毫升×48矿泉水 ×1
+      if (/^\d+$/.test(cleanName) && items.length > 0) {
+        const qty = parseInt(cleanName, 10);
+        if (qty > 0) {
+          items[items.length - 1].qty = qty;
+          if (parsed.unit) items[items.length - 1].unit = parsed.unit;
+        }
+        continue;
+      }
+
+      // 空名字但有数量+单位（如 "两份" → qty=2 unit="份"）：追加到前一个商品
+      if ((!cleanName || cleanName.length < 1) && parsed.qty > 1 && items.length > 0) {
+        items[items.length - 1].qty = parsed.qty;
+        if (parsed.unit) items[items.length - 1].unit = parsed.unit;
+        continue;
+      }
+
       if (!cleanName || cleanName.length < 1) continue;
 
       // 跳过明显非商品词
