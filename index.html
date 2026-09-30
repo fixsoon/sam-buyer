@@ -829,13 +829,6 @@ const GREETING_PATTERN = /^(周末好心情|好心情|谢谢|收到|备注|花�
 // 数量单位
 const QTY_UNITS = '桶份盒提束袋瓶罐包条根片张个只颗粒组套件份';
 
-// 「规格×N」判定阈值（BUG-15）
-// 当出现「规格单位×数字」时（如 300毫升×48 / 1.8kg×2），用 N 的大小区分语义：
-//   N >= PACK_SPEC_MIN  → 视为装箱规格，整体保留在商品名里，数量计 1（300毫升×48 是一箱48瓶）
-//   N <  PACK_SPEC_MIN  → 视为件数，数字从名字里剥离作为数量（1.8kg×2 是买2件）
-// 若某些品类需要调整（例如整箱数只有 6/8），改这一个数即可。
-const PACK_SPEC_MIN = 10;
-
 // --- 工具函数 ---
 
 function escHtml(s) {
@@ -903,24 +896,17 @@ function parseQty(token) {
   // 例如 "鸡排松饼组合*1" → name="鸡排松饼组合", qty=1
   // 例如 "酸种水晶面包×3" → name="酸种水晶面包", qty=3
   // 例如 "1.8kgX2" → name="1.8kg", qty=2（小数规格+乘号+数量）
-  // 例如 "MM300毫升×48" → name="MM300毫升×48", qty=1（×48 是装箱规格不是数量）
-  const specQtyMatch = t.match(/^(.+?)\s*[*×xX✕╳⨯]\s*(\d+)\s*$/);
+  // 例如 "MM300毫升×48" → name="MM300毫升×48", qty=1（×48是规格不是数量）
+  const specQtyMatch = t.match(/^(.+?)\s*[*×xX]\s*(\d+)\s*$/);
   if (specQtyMatch) {
-    let namePart = specQtyMatch[1].replace(/[*×xX✕╳⨯\s]+$/, '').trim();
+    let namePart = specQtyMatch[1].replace(/[*×xX\s]+$/, '').trim();
     const qty = parseInt(toHalfWidth(specQtyMatch[2]), 10) || 1;
     // 判断 × 后面的数字是"规格"还是"数量"
-    // 如果 namePart 以规格单位（毫升/g/kg/ml/L等）结尾，则 ×N 可能是装箱规格
+    // 如果 namePart 包含规格单位（毫升/g/kg/ml/L等），则 ×N 是规格的一部分
     const isSpecMultiplier = /\d\s*(?:毫升|ml|ML|g|kg|KG|G|克|千克|L|公升|mL)\s*$/i.test(namePart);
     if (isSpecMultiplier) {
-      // 这里有两种语义，必须区分（BUG-15）：
-      //   a) 装箱/整箱规格：300毫升×48 → 一箱48瓶，整体保留为名字，qty=1
-      //   b) 件数：          1.8kg×2   → 买2件，名字只保留到规格，qty=2
-      // 判别依据：装箱数通常是 12/24/48 这类「成打」数量级，件数通常是个位数。
-      // 阈值 PACK_SPEC_MIN 可调；若你的接龙里出现"整箱但只买1箱"以外的写法，可直接改这个常量。
-      if (qty >= PACK_SPEC_MIN) {
-        return { name: t, qty: 1, unit: '' };
-      }
-      return namePart.length >= 1 ? { name: namePart, qty, unit: '' } : { name: t, qty: 1, unit: '' };
+      // ×N 是规格（如 300毫升×48），整体保留为名字，qty=1
+      return { name: t, qty: 1, unit: '' };
     }
     if (namePart.length >= 1) {
       return { name: namePart, qty, unit: '' };
@@ -1022,12 +1008,11 @@ function splitGoodsSmart(rawText) {
   // 策略：先保护 "规格数字×数量" 模式（如 300毫升×48、100g×24、1.8kgX2）
   // 用临时占位符保护规格×，替换完数量×后再恢复
   // 规格×模式：前面紧跟 (数字+规格单位) 或 (数字)，且后面紧跟数字
-  s = s.replace(/(\d\s*(?:毫升|ml|ML|g|kg|KG|G|克|千克|L|公升|mL)\s*)[*×xX✕╳⨯]\s*(\d+)/gi, '$1⨯$2');
+  s = s.replace(/(\d\s*(?:毫升|ml|ML|g|kg|KG|G|克|千克|L|公升|mL)\s*)[*×xX]\s*(\d+)/gi, '$1⨯$2');
   // 也保护 "数字×数字×数字" 模式（如 100g×24*1 中的中间 ×）
-  s = s.replace(/(\d)\s*[*×xX✕╳⨯]\s*(\d+\s*[*×xX✕╳⨯])/gi, '$1⨯$2');
+  s = s.replace(/(\d)\s*[*×xX]\s*(\d+\s*[*×xX])/gi, '$1⨯$2');
   // 剩余的 ×/X 且紧跟数字 → 视为数量分隔符，替换为 |
-  // 注意：⨯ 是上面用于保护「装箱规格×」的占位符，绝不能出现在这里，否则会把 300毫升×48 拆开
-  s = s.replace(/[*×xX✕╳]\s*(\d)/g, '|$1');
+  s = s.replace(/[*×xX]\s*(\d)/g, '|$1');
   // 恢复规格⨯为 ×
   s = s.replace(/⨯/g, '×');
 
@@ -1857,11 +1842,6 @@ BUG-11 ✅ Yancy #14 续行混在一起 → 逐行独立解析 goodsLines，不�
 BUG-12 ✅ Yancy #14 "整份"未识别为单位 → parseQty 增加尾部 "整份/半份" 等无前缀数字单位检测
 BUG-13 ✅ Yancy #14 "1整份"续行误当独立商品 → 续行中纯数量行（如"1整份"、"2提"）回附到上一商品行
 BUG-14 ✅ parseQty "1整份"数字残留商品名 → 正则增加 [整半]? 前缀，匹配 "数字+整/半+单位" 模式
-BUG-15 ✅ 规格单位后跟 ×N 被一刀切当成装箱规格（v5 修 #4 时引入的过度纠正）：
-          "1.8kgX2" / "2L×6" 的 ×N 是「件数」，却被吞进商品名且数量记成 1 →
-          改为按 PACK_SPEC_MIN 阈值判别：N>=10 视为装箱规格(如 300毫升×48)，N<10 视为件数(如 1.8kg×2)
-          同时修复占位符 ⨯ 被"数量×"规则误伤导致 "300毫升×48矿泉水" 被拆开的问题
-BUG-16 ✅ 乘号字形不全 → [*×xX] 补全为 [*×xX✕╳⨯]，兼容 ✕/╳ 写法
 
 DIFF-1 ✅ existNormMap 过滤 status==='removed'
 DIFF-2 ✅ 保留 removed 商品的 checked 原值
